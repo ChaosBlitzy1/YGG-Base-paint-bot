@@ -24,6 +24,8 @@ TICKET_WAITING_MESSAGE = (
 )
 TICKET_EMBED_COLOR = discord.Color.from_rgb(46, 204, 113)
 POSTER_SUBMIT_ROLE_ID = 1474481893809586206
+POSTER_STORAGE_CHANNEL_NAME = "bot-poster-storage"
+POSTER_STORAGE_CHANNEL_TOPIC = "Private storage for Base Paint Bot poster submissions."
 POSTER_IMAGE_EXTENSIONS = {
     "image/png": ".png",
     "image/jpeg": ".jpg",
@@ -88,6 +90,73 @@ def valid_poster_extension(content_type: str | None, data: bytes) -> str | None:
     return next(
         (candidate for candidate, matches in signatures.items() if matches), None
     )
+
+
+def poster_storage_marker(system: str, paint_slug: str) -> str:
+    return f"base-paint-poster:v1:{system}:{paint_slug}"
+
+
+def find_poster_storage_channel(guild: discord.Guild) -> discord.TextChannel | None:
+    channel = next(
+        (
+            candidate
+            for candidate in guild.text_channels
+            if candidate.name == POSTER_STORAGE_CHANNEL_NAME
+        ),
+        None,
+    )
+    if channel is not None and channel.topic != POSTER_STORAGE_CHANNEL_TOPIC:
+        raise RuntimeError(
+            f"#{POSTER_STORAGE_CHANNEL_NAME} already exists but is not the bot's poster storage channel."
+        )
+    return channel
+
+
+async def get_or_create_poster_storage_channel(
+    guild: discord.Guild,
+) -> discord.TextChannel:
+    channel = find_poster_storage_channel(guild)
+    if channel is not None:
+        return channel
+    bot_member = guild.me
+    if bot_member is None:
+        raise RuntimeError("I couldn't identify my bot member in this server.")
+    return await guild.create_text_channel(
+        POSTER_STORAGE_CHANNEL_NAME,
+        topic=POSTER_STORAGE_CHANNEL_TOPIC,
+        overwrites={
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            bot_member: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                attach_files=True,
+                manage_messages=True,
+            ),
+        },
+        reason="Create private storage for submitted base paint posters",
+    )
+
+
+async def load_poster_from_discord(
+    guild: discord.Guild, system: str, paint_slug: str
+) -> tuple[bytes, str] | None:
+    channel = find_poster_storage_channel(guild)
+    if channel is None:
+        return None
+    marker = poster_storage_marker(system, paint_slug)
+    async for message in channel.history(limit=None):
+        if not message.author.bot or message.content != marker:
+            continue
+        if not message.attachments:
+            raise ValueError("The saved poster message has no image attachment.")
+        attachment = message.attachments[0]
+        image_data = await attachment.read()
+        extension = valid_poster_extension(attachment.content_type, image_data)
+        if extension is None:
+            raise ValueError("The saved poster attachment is not a supported image.")
+        return image_data, extension
+    return None
 
 
 def make_panel_embed(image_url: str | None = None) -> discord.Embed:
@@ -729,36 +798,48 @@ async def create_ticket_for_paint(
         return
 
     poster_settings = config.get("posters", {})
-    poster_extension = poster_settings.get(f"{system}:{paint_slug}")
-    if poster_extension is None and system == "stb":
-        poster_extension = poster_settings.get(paint_slug)
     poster_bytes: bytes | None = None
     poster_filename: str | None = None
-    if poster_extension is not None:
-        if poster_extension not in set(POSTER_IMAGE_EXTENSIONS.values()):
-            await interaction.edit_original_response(
-                content=f"The saved {paint_labels[paint_slug]} poster has an invalid file type. Ask an administrator to submit it again.",
-                view=None,
-            )
-            return
-        poster_path = poster_path_for(
-            guild.id, paint_slug, poster_extension, system
+    try:
+        stored_poster = await load_poster_from_discord(guild, system, paint_slug)
+    except (discord.HTTPException, RuntimeError, ValueError) as error:
+        await interaction.edit_original_response(
+            content=f"I couldn't retrieve the saved {paint_labels[paint_slug]} poster from Discord, so I couldn't create the ticket. Details: `{error}`",
+            view=None,
         )
-        if system == "stb" and not poster_path.exists():
-            legacy_path = legacy_stb_poster_path(
-                guild.id, paint_slug, poster_extension
-            )
-            if legacy_path.exists():
-                poster_path = legacy_path
-        try:
-            poster_bytes = poster_path.read_bytes()
-        except OSError as error:
-            await interaction.edit_original_response(
-                content=f"The saved {paint_labels[paint_slug]} poster is unavailable, so I couldn't create the ticket. Ask an administrator to submit it again. Details: `{error}`",
-                view=None,
-            )
-            return
+        return
+    if stored_poster is not None:
+        poster_bytes, poster_extension = stored_poster
         poster_filename = f"{system}-{paint_slug}-poster{poster_extension}"
+    else:
+        poster_extension = poster_settings.get(f"{system}:{paint_slug}")
+        if poster_extension is None and system == "stb":
+            poster_extension = poster_settings.get(paint_slug)
+        if poster_extension is not None:
+            if poster_extension not in set(POSTER_IMAGE_EXTENSIONS.values()):
+                await interaction.edit_original_response(
+                    content=f"The saved {paint_labels[paint_slug]} poster has an invalid file type. Ask an administrator to submit it again.",
+                    view=None,
+                )
+                return
+            poster_path = poster_path_for(
+                guild.id, paint_slug, poster_extension, system
+            )
+            if system == "stb" and not poster_path.exists():
+                legacy_path = legacy_stb_poster_path(
+                    guild.id, paint_slug, poster_extension
+                )
+                if legacy_path.exists():
+                    poster_path = legacy_path
+            try:
+                poster_bytes = poster_path.read_bytes()
+            except OSError as error:
+                await interaction.edit_original_response(
+                    content=f"The saved {paint_labels[paint_slug]} poster is unavailable, so I couldn't create the ticket. Ask an administrator to submit it again. Details: `{error}`",
+                    view=None,
+                )
+                return
+            poster_filename = f"{system}-{paint_slug}-poster{poster_extension}"
 
     lock = TICKET_CREATION_LOCKS.setdefault(guild.id, asyncio.Lock())
     async with lock:
@@ -1934,29 +2015,41 @@ async def submit_poster_for_system(
         )
         return
 
-    poster_path = poster_path_for(guild.id, paint_slug, extension, system)
     try:
-        poster_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_path = poster_path.with_suffix(poster_path.suffix + ".tmp")
-        temporary_path.write_bytes(image_data)
-        os.replace(temporary_path, poster_path)
-
-        guild_config = TICKET_CONFIGS.setdefault(str(guild.id), {})
-        posters = guild_config.setdefault("posters", {})
-        poster_key = f"{system}:{paint_slug}"
-        previous_extension = posters.get(poster_key)
-        posters[poster_key] = extension
-        try:
-            save_ticket_configs()
-        except (OSError, TypeError, ValueError):
-            if previous_extension is None:
-                posters.pop(poster_key, None)
-            else:
-                posters[poster_key] = previous_extension
-            raise
-    except (OSError, TypeError, ValueError) as error:
+        storage_channel = await get_or_create_poster_storage_channel(guild)
+        marker = poster_storage_marker(system, paint_slug)
+        previous_messages = [
+            message
+            async for message in storage_channel.history(limit=None)
+            if message.author.bot and message.content == marker
+        ]
+        await storage_channel.send(
+            content=marker,
+            file=discord.File(
+                io.BytesIO(image_data),
+                filename=f"{system}-{paint_slug}-poster{extension}",
+            ),
+        )
+    except (discord.HTTPException, RuntimeError) as error:
         await interaction.followup.send(
-            f"I couldn't save the poster. Check the bot's local file access. Details: `{error}`",
+            f"I couldn't save the poster to the server's private Discord storage. The bot needs permission to create and access channels, send messages, view message history, and attach files. Details: `{error}`",
+            ephemeral=True,
+        )
+        return
+
+    cleanup_error = None
+    for previous_message in previous_messages:
+        try:
+            await previous_message.delete(
+                reason=f"Replace submitted {system_label} {paint_labels[paint_slug]} poster"
+            )
+        except discord.HTTPException as error:
+            cleanup_error = error
+            break
+
+    if cleanup_error is not None:
+        await interaction.followup.send(
+            f"Poster submitted for **{system_label} {paint_labels[paint_slug]}** and is ready for future tickets, but I couldn't remove an older stored copy. Details: `{cleanup_error}`",
             ephemeral=True,
         )
         return
