@@ -1,0 +1,80 @@
+{
+  "1411143097823399948": {
+    "panel_channel_id": 1475289271878291468,
+    "transcript_channel_id": 1475294324404257030,
+    "category_id": 1474446168434938120,
+    "support_role_ids": [
+      1560110213778903110,
+      1474481893809586206,
+      1465131438331400263,
+      1454244499504234508,
+      1449538700139823104
+    ],
+    "transcripts_enabled": true,
+    "panel_image_url": "https://cdn.discordapp.com/banners/1411143097823399948/a_e44e07c3eaa13e965581dc838a6ca0ab.webp?size=480&animated=true",
+    "ticket_counters": {
+      "gold": 1,
+      "diamond": 1,
+      "spooky": 4,
+      "goup:radioactive": 2,
+      "goup:cyber": 2,
+      "goup:aqua": 6,
+      "stb:carnival": 1,
+      "goup:galaxy": 4,
+      "goup:lava": 2,
+      "stb:darkness": 2,
+      "goup:silver": 1,
+      "goup:crystal": 3,
+      "goup:black-n-white": 1,
+      "goup:default": 2,
+      "stb:gothic": 2,
+      "goup:halloween": 2,
+      "stb:rainbow": 1,
+      "goup:summer": 1,
+      "goup:dreamy": 1,
+      "stb:heaven": 1,
+      "goup:rainbow": 1,
+      "stb:jungle": 1,
+      "goup:party": 1,
+      "stb:lovely": 2
+    },
+    "posters": {
+      "rainbow": ".png",
+      "dreamy": ".png",
+      "summer": ".png",
+      "spooky": ".png",
+      "heaven": ".png",
+      "goup:aqua": ".jpg",
+      "goup:lava": ".png",
+      "goup:cyber": ".png",
+      "stb:darkness": ".png",
+      "goup:silver": ".png",
+      "goup:crystal": ".jpg",
+      "goup:black-n-white": ".png",
+      "goup:dreamy": ".png",
+      "stb:christmas": ".png",
+      "stb:gothic": ".png",
+      "goup:rainbow": ".png",
+      "goup:halloween": ".png",
+      "stb:carnival": ".png",
+      "stb:jungle": ".png",
+      "stb:zombie": ".png",
+      "goup:candy": ".png",
+      "goup:galaxy": ".png",
+      "stb:lovely": ".png",
+      "stb:gold": ".png",
+      "stb:chocolate": ".png"
+    },
+    "goup_transcript_channel_id": 1495973137580425367,
+    "goup_transcripts_enabled": true
+  },
+  "900": {
+    "category_id": 500,
+    "support_role_ids": [],
+    "ticket_counters": {
+      "stb:gold": 1,
+      "goup:gold": 1
+    },
+    "transcripts_enabled": false
+  }
+}
