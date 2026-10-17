@@ -26,6 +26,8 @@ TICKET_EMBED_COLOR = discord.Color.from_rgb(46, 204, 113)
 POSTER_SUBMIT_ROLE_ID = 1474481893809586206
 POSTER_STORAGE_CHANNEL_NAME = "bot-poster-storage"
 POSTER_STORAGE_CHANNEL_TOPIC = "Private storage for Base Paint Bot poster submissions."
+POSTER_BACKUP_CHANNEL_NAME = "bot-poster-backup"
+POSTER_BACKUP_CHANNEL_TOPIC = "Private backup for Base Paint Bot poster submissions."
 POSTER_IMAGE_EXTENSIONS = {
     "image/png": ".png",
     "image/jpeg": ".jpg",
@@ -96,34 +98,45 @@ def poster_storage_marker(system: str, paint_slug: str) -> str:
     return f"base-paint-poster:v1:{system}:{paint_slug}"
 
 
-def find_poster_storage_channel(guild: discord.Guild) -> discord.TextChannel | None:
+def find_poster_channel(
+    guild: discord.Guild, name: str, topic: str
+) -> discord.TextChannel | None:
     channel = next(
         (
             candidate
             for candidate in guild.text_channels
-            if candidate.name == POSTER_STORAGE_CHANNEL_NAME
+            if candidate.name == name
         ),
         None,
     )
-    if channel is not None and channel.topic != POSTER_STORAGE_CHANNEL_TOPIC:
+    if channel is not None and channel.topic != topic:
         raise RuntimeError(
-            f"#{POSTER_STORAGE_CHANNEL_NAME} already exists but is not the bot's poster storage channel."
+            f"#{name} already exists but is not the bot's poster channel."
         )
     return channel
 
 
-async def get_or_create_poster_storage_channel(
-    guild: discord.Guild,
+def find_poster_storage_channel(guild: discord.Guild) -> discord.TextChannel | None:
+    return find_poster_channel(
+        guild, POSTER_STORAGE_CHANNEL_NAME, POSTER_STORAGE_CHANNEL_TOPIC
+    )
+
+
+def find_poster_backup_channel(guild: discord.Guild) -> discord.TextChannel | None:
+    return find_poster_channel(
+        guild, POSTER_BACKUP_CHANNEL_NAME, POSTER_BACKUP_CHANNEL_TOPIC
+    )
+
+
+async def create_poster_channel(
+    guild: discord.Guild, name: str, topic: str
 ) -> discord.TextChannel:
-    channel = find_poster_storage_channel(guild)
-    if channel is not None:
-        return channel
     bot_member = guild.me
     if bot_member is None:
         raise RuntimeError("I couldn't identify my bot member in this server.")
     return await guild.create_text_channel(
-        POSTER_STORAGE_CHANNEL_NAME,
-        topic=POSTER_STORAGE_CHANNEL_TOPIC,
+        name,
+        topic=topic,
         overwrites={
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             bot_member: discord.PermissionOverwrite(
@@ -136,6 +149,85 @@ async def get_or_create_poster_storage_channel(
         },
         reason="Create private storage for submitted base paint posters",
     )
+
+
+async def get_or_create_poster_storage_channel(
+    guild: discord.Guild,
+) -> discord.TextChannel:
+    channel = find_poster_storage_channel(guild)
+    if channel is not None:
+        return channel
+    return await create_poster_channel(
+        guild,
+        POSTER_STORAGE_CHANNEL_NAME,
+        POSTER_STORAGE_CHANNEL_TOPIC,
+    )
+
+
+async def copy_poster_messages(
+    source: discord.TextChannel, destination: discord.TextChannel
+) -> None:
+    destination_messages: dict[str, list[discord.Message]] = {}
+    async for message in destination.history(limit=None):
+        if (
+            message.author.bot
+            and message.content.startswith("base-paint-poster:v1:")
+            and message.attachments
+        ):
+            destination_messages.setdefault(message.content, []).append(message)
+    copied_markers: set[str] = set()
+    async for message in source.history(limit=None):
+        marker = message.content
+        marker_parts = marker.split(":")
+        if (
+            not message.author.bot
+            or len(marker_parts) != 4
+            or marker_parts[:2] != ["base-paint-poster", "v1"]
+            or marker in copied_markers
+            or not message.attachments
+        ):
+            continue
+        attachment = message.attachments[0]
+        image_data = await attachment.read()
+        extension = valid_poster_extension(attachment.content_type, image_data)
+        if extension is None:
+            raise ValueError(f"Poster backup `{marker}` is not a supported image.")
+        copied_markers.add(marker)
+        matching_messages = destination_messages.get(marker, [])
+        if matching_messages:
+            existing_data = await matching_messages[0].attachments[0].read()
+            if existing_data == image_data:
+                continue
+        new_message = await destination.send(
+            content=marker,
+            file=discord.File(
+                io.BytesIO(image_data),
+                filename=f"{marker_parts[2]}-{marker_parts[3]}-poster{extension}",
+            ),
+        )
+        for old_message in matching_messages:
+            await old_message.delete(
+                reason="Synchronize mirrored base paint poster storage"
+            )
+        destination_messages[marker] = [new_message]
+
+
+async def restore_poster_storage(guild: discord.Guild) -> None:
+    storage_channel = find_poster_storage_channel(guild)
+    backup_channel = find_poster_backup_channel(guild)
+    if storage_channel is None:
+        if backup_channel is None:
+            return
+        storage_channel = await create_poster_channel(
+            guild, POSTER_STORAGE_CHANNEL_NAME, POSTER_STORAGE_CHANNEL_TOPIC
+        )
+        await copy_poster_messages(backup_channel, storage_channel)
+        return
+    if backup_channel is None:
+        backup_channel = await create_poster_channel(
+            guild, POSTER_BACKUP_CHANNEL_NAME, POSTER_BACKUP_CHANNEL_TOPIC
+        )
+    await copy_poster_messages(storage_channel, backup_channel)
 
 
 async def load_poster_from_discord(
@@ -1745,6 +1837,31 @@ bot = YGGBot(
 @bot.event
 async def on_ready() -> None:
     print(f"{bot.user} is online!")
+    for guild in bot.guilds:
+        try:
+            await restore_poster_storage(guild)
+        except (discord.HTTPException, RuntimeError, ValueError) as error:
+            print(
+                f"Couldn't synchronize poster storage for server {guild.id}: {error}"
+            )
+
+
+@bot.event
+async def on_guild_channel_delete(
+    channel: discord.abc.GuildChannel,
+) -> None:
+    if channel.name not in {
+        POSTER_STORAGE_CHANNEL_NAME,
+        POSTER_BACKUP_CHANNEL_NAME,
+    }:
+        return
+    try:
+        await restore_poster_storage(channel.guild)
+    except (discord.HTTPException, RuntimeError, ValueError) as error:
+        print(
+            f"Couldn't restore poster storage after deleting #{channel.name} "
+            f"in server {channel.guild.id}: {error}"
+        )
 
 
 @bot.tree.command(
@@ -2016,23 +2133,33 @@ async def submit_poster_for_system(
         return
 
     try:
+        await restore_poster_storage(guild)
         storage_channel = await get_or_create_poster_storage_channel(guild)
+        backup_channel = find_poster_backup_channel(guild)
+        if backup_channel is None:
+            backup_channel = await create_poster_channel(
+                guild, POSTER_BACKUP_CHANNEL_NAME, POSTER_BACKUP_CHANNEL_TOPIC
+            )
         marker = poster_storage_marker(system, paint_slug)
-        previous_messages = [
-            message
-            async for message in storage_channel.history(limit=None)
-            if message.author.bot and message.content == marker
-        ]
-        await storage_channel.send(
-            content=marker,
-            file=discord.File(
-                io.BytesIO(image_data),
-                filename=f"{system}-{paint_slug}-poster{extension}",
-            ),
-        )
+        previous_messages: list[discord.Message] = []
+        for target_channel in (storage_channel, backup_channel):
+            previous_messages.extend(
+                [
+                    message
+                    async for message in target_channel.history(limit=None)
+                    if message.author.bot and message.content == marker
+                ]
+            )
+            await target_channel.send(
+                content=marker,
+                file=discord.File(
+                    io.BytesIO(image_data),
+                    filename=f"{system}-{paint_slug}-poster{extension}",
+                ),
+            )
     except (discord.HTTPException, RuntimeError) as error:
         await interaction.followup.send(
-            f"I couldn't save the poster to the server's private Discord storage. The bot needs permission to create and access channels, send messages, view message history, and attach files. Details: `{error}`",
+            f"I couldn't save the poster to the server's private Discord storage and backup. The bot needs permission to create and access channels, send messages, view message history, and attach files. Details: `{error}`",
             ephemeral=True,
         )
         return
