@@ -23,6 +23,13 @@ TICKET_WAITING_MESSAGE = (
     "Please send photos of your payment and collateral. Thank you!"
 )
 TICKET_EMBED_COLOR = discord.Color.from_rgb(46, 204, 113)
+STB_GOUP_PAINT_NOTE = (
+    "\n\n__**📌 PLEASE NOTE:**__\n\n"
+    "**All items that spawn in STB/Go Up must be given to the painter, regardless of rarity or value. "
+    "This includes Good Secrets, Eternals, Absolutes, Goats, Divines, Ascended, and Forbidden.**\n\n"
+    "**This rule applies to all spawns without exception.**\n\n"
+    "**Thank you for your cooperation.**"
+)
 POSTER_SUBMIT_ROLE_ID = 1474481893809586206
 POSTER_STORAGE_CHANNEL_NAME = "bot-poster-storage"
 POSTER_STORAGE_CHANNEL_TOPIC = "Private storage for Base Paint Bot poster submissions."
@@ -263,6 +270,7 @@ def make_panel_embed(image_url: str | None = None) -> discord.Embed:
             "- Collateral is required for all indexing sessions no matter what, if you don't have sufficient collateral the ticket will be closed.\n"
             "- Be ready and aware, our painters work hard and have real lives, please respond to them whenever they ask questions.\n"
             "- Please be respectful, our painters will show you the same respect that you show them."
+            f"{STB_GOUP_PAINT_NOTE}"
         ),
         color=TICKET_EMBED_COLOR,
     )
@@ -281,6 +289,7 @@ def make_ticket_rules_embed() -> discord.Embed:
             "- Collateral is required for all indexing sessions no matter what, if you don't have sufficient collateral the ticket will be closed.\n"
             "- Be ready and aware, our painters work hard and have real lives, please respond to them whenever they ask questions.\n"
             "- Please be respectful, our painters will show you the same respect that you show them."
+            f"{STB_GOUP_PAINT_NOTE}"
         ),
         color=TICKET_EMBED_COLOR,
     )
