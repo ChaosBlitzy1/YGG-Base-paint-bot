@@ -1925,6 +1925,30 @@ async def basepaint_add(
     system: discord.app_commands.Choice[str],
     paint_name: str,
 ) -> None:
+    await add_ticket_paint(interaction, system.value, paint_name)
+
+
+@bot.tree.command(
+    name="ticketbp_paint_add",
+    description="Add a base paint to the STB or Go-Up ticket picker.",
+)
+@discord.app_commands.choices(
+    system=[
+        discord.app_commands.Choice(name="STB", value="stb"),
+        discord.app_commands.Choice(name="Go-Up", value="goup"),
+    ]
+)
+async def ticketbp_paint_add(
+    interaction: discord.Interaction,
+    system: discord.app_commands.Choice[str],
+    paint_name: str,
+) -> None:
+    await add_ticket_paint(interaction, system.value, paint_name)
+
+
+async def add_ticket_paint(
+    interaction: discord.Interaction, system_key: str, paint_name: str
+) -> None:
     guild = interaction.guild
     member = interaction.user
     if guild is None or not isinstance(member, discord.Member):
@@ -1960,7 +1984,6 @@ async def basepaint_add(
         )
         return
 
-    system_key = system.value
     system_paints = PAINT_SYSTEMS[system_key]["options"]
     if any(existing_slug == paint_slug for existing_slug, _ in system_paints):
         await interaction.response.send_message(
