@@ -338,6 +338,7 @@ class TicketPanelView(discord.ui.View):
         label="STB Base Paint Ticket",
         style=discord.ButtonStyle.success,
         custom_id="basepaint:create_ticket",
+        emoji="🧠",
     )
     async def create_ticket(
         self, interaction: discord.Interaction, _: discord.ui.Button
@@ -1176,6 +1177,7 @@ class TicketPanelView(discord.ui.View):
         label="STB Base Paint Ticket",
         style=discord.ButtonStyle.success,
         custom_id="basepaint:create_ticket",
+        emoji="🧠",
     )
     async def create_stb_ticket(
         self, interaction: discord.Interaction, _: discord.ui.Button
@@ -1186,6 +1188,7 @@ class TicketPanelView(discord.ui.View):
         label="Go-Up Base Paint Ticket",
         style=discord.ButtonStyle.success,
         custom_id="basepaint:create_go_up_ticket",
+        emoji="⬆️",
     )
     async def create_goup_ticket(
         self, interaction: discord.Interaction, _: discord.ui.Button
@@ -1957,12 +1960,7 @@ async def add_ticket_paint(
         )
         return
 
-    authorized = (
-        member.guild_permissions.administrator
-        or member.guild_permissions.manage_guild
-        or any(role.id == POSTER_SUBMIT_ROLE_ID for role in member.roles)
-    )
-    if not authorized:
+    if not can_manage_ticket_paints(member):
         await interaction.response.send_message(
             "You need Manage Server permission or the authorized painter role to add base paints.",
             ephemeral=True,
@@ -2019,6 +2017,221 @@ async def add_ticket_paint(
         f"Added **{paint_label}** to the {PAINT_SYSTEMS[system_key]['label']} ticket picker. It is now available for new tickets and poster submissions.",
         ephemeral=True,
     )
+
+
+def can_manage_ticket_paints(member: discord.Member) -> bool:
+    return (
+        member.guild_permissions.administrator
+        or member.guild_permissions.manage_guild
+        or any(role.id == POSTER_SUBMIT_ROLE_ID for role in member.roles)
+    )
+
+
+def custom_paint_choices(
+    current: str, system_key: str
+) -> list[discord.app_commands.Choice[str]]:
+    query = current.strip().casefold()
+    return [
+        discord.app_commands.Choice(name=label, value=slug)
+        for slug, label in CUSTOM_PAINT_OPTIONS[system_key]
+        if query in slug.casefold() or query in label.casefold()
+    ][:25]
+
+
+@bot.tree.command(
+    name="ticketbp_paint_edit",
+    description="Change the display name of a custom STB or Go-Up paint.",
+)
+@discord.app_commands.choices(
+    system=[
+        discord.app_commands.Choice(name="STB", value="stb"),
+        discord.app_commands.Choice(name="Go-Up", value="goup"),
+    ]
+)
+async def ticketbp_paint_edit(
+    interaction: discord.Interaction,
+    system: discord.app_commands.Choice[str],
+    paint_name: str,
+    new_name: str,
+) -> None:
+    member = interaction.user
+    if interaction.guild is None or not isinstance(member, discord.Member):
+        await interaction.response.send_message(
+            "Edit base paints from a server.", ephemeral=True
+        )
+        return
+    if not can_manage_ticket_paints(member):
+        await interaction.response.send_message(
+            "You need Manage Server permission or the authorized painter role to edit base paints.",
+            ephemeral=True,
+        )
+        return
+
+    system_key = system.value
+    paint = next(
+        (
+            option
+            for option in CUSTOM_PAINT_OPTIONS[system_key]
+            if option[0] == paint_name
+        ),
+        None,
+    )
+    if paint is None:
+        await interaction.response.send_message(
+            "Select a custom paint from the autocomplete list. Built-in paints cannot be edited.",
+            ephemeral=True,
+        )
+        return
+
+    normalized_name = new_name.strip()
+    paint_label = normalized_name.title()
+    if not normalized_name or len(paint_label) > 100:
+        await interaction.response.send_message(
+            "Enter a paint name that is between 1 and 100 characters.",
+            ephemeral=True,
+        )
+        return
+    if any(
+        slug != paint[0] and label.casefold() == paint_label.casefold()
+        for slug, label in PAINT_SYSTEMS[system_key]["options"]
+    ):
+        await interaction.response.send_message(
+            f"**{paint_label}** already exists in the {PAINT_SYSTEMS[system_key]['label']} paint list.",
+            ephemeral=True,
+        )
+        return
+
+    updated_custom_options = {
+        key: [
+            (slug, paint_label if key == system_key and slug == paint[0] else label)
+            for slug, label in options
+        ]
+        for key, options in CUSTOM_PAINT_OPTIONS.items()
+    }
+    try:
+        save_custom_paint_options(updated_custom_options)
+    except (OSError, TypeError, ValueError) as error:
+        await interaction.response.send_message(
+            f"I couldn't save the edited paint. Check the bot's local file access. Details: `{error}`",
+            ephemeral=True,
+        )
+        return
+
+    CUSTOM_PAINT_OPTIONS[system_key] = updated_custom_options[system_key]
+    system_paints = PAINT_SYSTEMS[system_key]["options"]
+    option_index = next(
+        index for index, (slug, _) in enumerate(system_paints) if slug == paint[0]
+    )
+    system_paints[option_index] = (paint[0], paint_label)
+    PAINT_LABELS[system_key][paint[0]] = paint_label
+    await interaction.response.send_message(
+        f"Renamed **{paint[1]}** to **{paint_label}** in the {PAINT_SYSTEMS[system_key]['label']} ticket picker. Its poster and ticket history remain linked.",
+        ephemeral=True,
+    )
+
+
+@ticketbp_paint_edit.autocomplete("paint_name")
+async def ticketbp_paint_edit_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[discord.app_commands.Choice[str]]:
+    system = getattr(interaction.namespace, "system", None)
+    system_key = getattr(system, "value", system)
+    if (
+        interaction.guild is None
+        or not isinstance(system_key, str)
+        or system_key not in CUSTOM_PAINT_OPTIONS
+    ):
+        return []
+    return custom_paint_choices(current, system_key)
+
+
+@bot.tree.command(
+    name="ticketbp_paint_remove",
+    description="Remove a custom STB or Go-Up paint from its ticket picker.",
+)
+@discord.app_commands.choices(
+    system=[
+        discord.app_commands.Choice(name="STB", value="stb"),
+        discord.app_commands.Choice(name="Go-Up", value="goup"),
+    ]
+)
+async def ticketbp_paint_remove(
+    interaction: discord.Interaction,
+    system: discord.app_commands.Choice[str],
+    paint_name: str,
+) -> None:
+    member = interaction.user
+    if interaction.guild is None or not isinstance(member, discord.Member):
+        await interaction.response.send_message(
+            "Remove base paints from a server.", ephemeral=True
+        )
+        return
+    if not can_manage_ticket_paints(member):
+        await interaction.response.send_message(
+            "You need Manage Server permission or the authorized painter role to remove base paints.",
+            ephemeral=True,
+        )
+        return
+
+    system_key = system.value
+    paint = next(
+        (
+            option
+            for option in CUSTOM_PAINT_OPTIONS[system_key]
+            if option[0] == paint_name
+        ),
+        None,
+    )
+    if paint is None:
+        await interaction.response.send_message(
+            "Select a custom paint from the autocomplete list. Built-in paints cannot be removed.",
+            ephemeral=True,
+        )
+        return
+
+    updated_custom_options = {
+        key: [option for option in options if key != system_key or option[0] != paint[0]]
+        for key, options in CUSTOM_PAINT_OPTIONS.items()
+    }
+    try:
+        save_custom_paint_options(updated_custom_options)
+    except (OSError, TypeError, ValueError) as error:
+        await interaction.response.send_message(
+            f"I couldn't remove the paint. Check the bot's local file access. Details: `{error}`",
+            ephemeral=True,
+        )
+        return
+
+    CUSTOM_PAINT_OPTIONS[system_key] = updated_custom_options[system_key]
+    PAINT_SYSTEMS[system_key]["options"] = [
+        option
+        for option in PAINT_SYSTEMS[system_key]["options"]
+        if option[0] != paint[0]
+    ]
+    PAINT_LABELS[system_key].pop(paint[0])
+    PAINT_ORDERS[system_key] = {
+        slug: index
+        for index, (slug, _) in enumerate(PAINT_SYSTEMS[system_key]["options"])
+    }
+    await interaction.response.send_message(
+        f"Removed **{paint[1]}** from the {PAINT_SYSTEMS[system_key]['label']} ticket picker. Its saved poster and existing ticket history were retained.",
+        ephemeral=True,
+    )
+
+
+@ticketbp_paint_remove.autocomplete("paint_name")
+async def ticketbp_paint_remove_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[discord.app_commands.Choice[str]]:
+    system = getattr(interaction.namespace, "system", None)
+    system_key = getattr(system, "value", system)
+    if (
+        interaction.guild is None
+        or not isinstance(system_key, str)
+        or system_key not in CUSTOM_PAINT_OPTIONS
+    ):
+        return []
+    return custom_paint_choices(current, system_key)
 
 
 @bot.tree.command(
