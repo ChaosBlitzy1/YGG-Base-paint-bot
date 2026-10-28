@@ -2452,9 +2452,15 @@ def paint_autocomplete(
     if interaction.guild is None:
         return []
     query = current.strip().casefold()
+    custom_slugs = {slug for slug, _ in CUSTOM_PAINT_OPTIONS[system]}
+    paint_options = [
+        (slug, label)
+        for slug, label in PAINT_SYSTEMS[system]["options"]
+        if slug not in custom_slugs
+    ] + CUSTOM_PAINT_OPTIONS[system]
     return [
         discord.app_commands.Choice(name=label, value=slug)
-        for slug, label in PAINT_LABELS[system].items()
+        for slug, label in paint_options
         if query in slug.casefold() or query in label.casefold()
     ][:25]
 
