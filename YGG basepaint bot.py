@@ -2458,11 +2458,12 @@ def paint_autocomplete(
         for slug, label in PAINT_SYSTEMS[system]["options"]
         if slug not in custom_slugs
     ] + CUSTOM_PAINT_OPTIONS[system]
-    return [
+    matching_options = [
         discord.app_commands.Choice(name=label, value=slug)
         for slug, label in paint_options
         if query in slug.casefold() or query in label.casefold()
-    ][:25]
+    ]
+    return matching_options[-25:]
 
 
 load_ticket_configs()
