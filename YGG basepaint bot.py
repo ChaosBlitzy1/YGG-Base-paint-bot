@@ -640,6 +640,7 @@ BASE_PAINT_OPTIONS = (
     ("rave", "🪩 Rave"),
     ("jungle", "🪴 Jungle"),
     ("spooky", "👻 Spooky"),
+    ("muertos", "🌸 Muertos"),
 )
 GOUP_PAINT_OPTIONS = (
     ("default", "📦 Default"),
@@ -660,6 +661,7 @@ GOUP_PAINT_OPTIONS = (
     ("galaxy", "🌌 Galaxy"),
     ("radioactive", "☢️ Radioactive"),
     ("halloween", "🎃 Halloween"),
+    ("muertos", "🌸 Muertos"),
 )
 PAINT_SYSTEMS = {
     "stb": {"label": "STB", "options": list(BASE_PAINT_OPTIONS)},
