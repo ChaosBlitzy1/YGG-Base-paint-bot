@@ -22,6 +22,9 @@ TICKET_CREATION_LOCKS: dict[int, asyncio.Lock] = {}
 TICKET_WAITING_MESSAGE = (
     "Please send photos of your payment and collateral. Thank you!"
 )
+PAUSED_PAINT_MESSAGE = (
+    "This paint is currently paused, Please try again later or pick a different base paint. Thank you."
+)
 TICKET_EMBED_COLOR = discord.Color.from_rgb(46, 204, 113)
 STB_GOUP_PAINT_NOTE = (
     "\n\n__**📌 PLEASE NOTE:**__\n\n"
@@ -328,6 +331,18 @@ def make_ticket_answers_embed(
 def owner_id_from_topic(topic: str | None) -> int | None:
     match = re.search(r"(?:^|\|)\s*owner_id=(\d+)", topic or "")
     return int(match.group(1)) if match else None
+
+
+def is_paint_paused(config: dict, system: str, paint_slug: str) -> bool:
+    paused_paints = config.get("paused_paints", {})
+    if not isinstance(paused_paints, dict):
+        raise ValueError("The saved paused paints setting is invalid.")
+    system_paints = paused_paints.get(system, [])
+    if not isinstance(system_paints, list) or not all(
+        isinstance(slug, str) for slug in system_paints
+    ):
+        raise ValueError("The saved paused paints setting is invalid.")
+    return paint_slug in system_paints
 
 
 class TicketPanelView(discord.ui.View):
@@ -794,6 +809,23 @@ class BasePaintDropdown(discord.ui.Select):
         self.system = system
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        guild = interaction.guild
+        config = TICKET_CONFIGS.get(str(guild.id)) if guild is not None else None
+        try:
+            paint_is_paused = config is not None and is_paint_paused(
+                config, self.system, self.values[0]
+            )
+        except ValueError as error:
+            await interaction.response.send_message(
+                f"I couldn't verify whether this paint is available. Please contact an administrator. Details: `{error}`",
+                ephemeral=True,
+            )
+            return
+        if paint_is_paused:
+            await interaction.response.send_message(
+                PAUSED_PAINT_MESSAGE, ephemeral=True
+            )
+            return
         await interaction.response.send_modal(
             BasePaintQuestionsModal(self.values[0], self.system)
         )
@@ -898,6 +930,19 @@ async def create_ticket_for_paint(
             view=None,
         )
         return
+    try:
+        if is_paint_paused(config, system, paint_slug):
+            await interaction.edit_original_response(
+                content=PAUSED_PAINT_MESSAGE,
+                view=None,
+            )
+            return
+    except ValueError as error:
+        await interaction.edit_original_response(
+            content=f"I couldn't verify whether this paint is available. Please contact an administrator. Details: `{error}`",
+            view=None,
+        )
+        return
 
     poster_settings = config.get("posters", {})
     poster_bytes: bytes | None = None
@@ -945,6 +990,12 @@ async def create_ticket_for_paint(
 
     lock = TICKET_CREATION_LOCKS.setdefault(guild.id, asyncio.Lock())
     async with lock:
+        if is_paint_paused(config, system, paint_slug):
+            await interaction.edit_original_response(
+                content=PAUSED_PAINT_MESSAGE,
+                view=None,
+            )
+            return
         existing = next(
             (
                 channel
@@ -2036,6 +2087,169 @@ def custom_paint_choices(
         for slug, label in CUSTOM_PAINT_OPTIONS[system_key]
         if query in slug.casefold() or query in label.casefold()
     ][:25]
+
+
+def ticket_paint_choices(
+    current: str, system_key: str
+) -> list[discord.app_commands.Choice[str]]:
+    query = current.strip().casefold()
+    return [
+        discord.app_commands.Choice(name=label, value=slug)
+        for slug, label in PAINT_SYSTEMS[system_key]["options"]
+        if query in slug.casefold() or query in label.casefold()
+    ][:25]
+
+
+async def set_paint_paused(
+    interaction: discord.Interaction, system: str, paint_slug: str, paused: bool
+) -> None:
+    guild = interaction.guild
+    member = interaction.user
+    if guild is None or not isinstance(member, discord.Member):
+        await interaction.response.send_message(
+            "Pause or resume base paints from a server.", ephemeral=True
+        )
+        return
+    if not can_manage_ticket_paints(member):
+        await interaction.response.send_message(
+            "You need Manage Server permission or the authorized painter role to pause or resume base paints.",
+            ephemeral=True,
+        )
+        return
+
+    config = TICKET_CONFIGS.get(str(guild.id))
+    if config is None:
+        await interaction.response.send_message(
+            "Ticket setup is incomplete. Please ask an administrator to run `/ticket_setupbp`.",
+            ephemeral=True,
+        )
+        return
+
+    paint_label = PAINT_LABELS[system].get(paint_slug)
+    if paint_label is None:
+        await interaction.response.send_message(
+            "Select a base paint from the autocomplete list.", ephemeral=True
+        )
+        return
+
+    lock = TICKET_CREATION_LOCKS.setdefault(guild.id, asyncio.Lock())
+    async with lock:
+        saved_paused_paints = config.get("paused_paints", {})
+        if not isinstance(saved_paused_paints, dict):
+            await interaction.response.send_message(
+                "I couldn't update the paused paints because the saved setting is invalid. Please contact an administrator.",
+                ephemeral=True,
+            )
+            return
+        system_paused_paints = saved_paused_paints.get(system, [])
+        if not isinstance(system_paused_paints, list) or not all(
+            isinstance(slug, str) for slug in system_paused_paints
+        ):
+            await interaction.response.send_message(
+                "I couldn't update the paused paints because the saved setting is invalid. Please contact an administrator.",
+                ephemeral=True,
+            )
+            return
+        if paused and paint_slug in system_paused_paints:
+            await interaction.response.send_message(
+                f"**{PAINT_SYSTEMS[system]['label']} {paint_label}** is already paused.",
+                ephemeral=True,
+            )
+            return
+        if not paused and paint_slug not in system_paused_paints:
+            await interaction.response.send_message(
+                f"**{PAINT_SYSTEMS[system]['label']} {paint_label}** is not paused.",
+                ephemeral=True,
+            )
+            return
+
+        updated_paused_paints = dict(saved_paused_paints)
+        updated_paused_paints[system] = (
+            [*system_paused_paints, paint_slug]
+            if paused
+            else [
+                slug for slug in system_paused_paints if slug != paint_slug
+            ]
+        )
+        had_saved_setting = "paused_paints" in config
+        config["paused_paints"] = updated_paused_paints
+        try:
+            save_ticket_configs()
+        except (OSError, TypeError, ValueError) as error:
+            if had_saved_setting:
+                config["paused_paints"] = saved_paused_paints
+            else:
+                config.pop("paused_paints", None)
+            await interaction.response.send_message(
+                f"I couldn't save the paused paint setting. Check the bot's local file access. Details: `{error}`",
+                ephemeral=True,
+            )
+            return
+
+    action = "Paused" if paused else "Resumed"
+    status = "New tickets for this paint are blocked until it is resumed." if paused else "New tickets for this paint can be created again."
+    await interaction.response.send_message(
+        f"{action} **{PAINT_SYSTEMS[system]['label']} {paint_label}**. {status}",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(
+    name="base_paint_pause",
+    description="Pause new tickets for an STB or Go-Up base paint.",
+)
+@discord.app_commands.choices(
+    system=[
+        discord.app_commands.Choice(name="STB", value="stb"),
+        discord.app_commands.Choice(name="Go-Up", value="goup"),
+    ]
+)
+async def base_paint_pause(
+    interaction: discord.Interaction,
+    system: discord.app_commands.Choice[str],
+    paint_name: str,
+) -> None:
+    await set_paint_paused(interaction, system.value, paint_name, True)
+
+
+@base_paint_pause.autocomplete("paint_name")
+async def base_paint_pause_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[discord.app_commands.Choice[str]]:
+    system = getattr(interaction.namespace, "system", None)
+    system_key = getattr(system, "value", system)
+    if not isinstance(system_key, str) or system_key not in PAINT_SYSTEMS:
+        return []
+    return ticket_paint_choices(current, system_key)
+
+
+@bot.tree.command(
+    name="base_paint_resume",
+    description="Resume new tickets for a paused STB or Go-Up base paint.",
+)
+@discord.app_commands.choices(
+    system=[
+        discord.app_commands.Choice(name="STB", value="stb"),
+        discord.app_commands.Choice(name="Go-Up", value="goup"),
+    ]
+)
+async def base_paint_resume(
+    interaction: discord.Interaction,
+    system: discord.app_commands.Choice[str],
+    paint_name: str,
+) -> None:
+    await set_paint_paused(interaction, system.value, paint_name, False)
+
+
+@base_paint_resume.autocomplete("paint_name")
+async def base_paint_resume_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[discord.app_commands.Choice[str]]:
+    system = getattr(interaction.namespace, "system", None)
+    system_key = getattr(system, "value", system)
+    if not isinstance(system_key, str) or system_key not in PAINT_SYSTEMS:
+        return []
+    return ticket_paint_choices(current, system_key)
 
 
 @bot.tree.command(
